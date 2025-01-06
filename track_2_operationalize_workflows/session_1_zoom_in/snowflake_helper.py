@@ -11,6 +11,7 @@ from prefect._experimental.lineage import emit_lineage_event
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
 @task
 async def setup_tables(block_name: str):
     """Create Snowflake tables for game scores and locations."""
@@ -49,10 +50,10 @@ async def setup_tables(block_name: str):
         """
 
         # Execute the SQL statements asynchronously
-        await asyncio.to_thread(snowflake_connector.execute, game_scores_table_sql)
+        snowflake_connector.execute(game_scores_table_sql)
         logger.info("Created table: GAME_SCORES")
 
-        await asyncio.to_thread(snowflake_connector.execute, game_locations_table_sql)
+        snowflake_connector.execute(game_locations_table_sql)
         logger.info("Created table: GAME_LOCATIONS")
 
         # Optionally, emit a lineage event after setting up tables
@@ -101,11 +102,22 @@ async def insert_game_scores(game_scores: List[Dict], block_name: str):
         """
 
         # Execute the insert asynchronously
-        await asyncio.to_thread(snowflake_connector.execute_many, insert_sql, game_scores)
-        logger.info(f"Inserted {len(game_scores)} game scores into Snowflake.")
+        snowflake_connector.execute_many(insert_sql, game_scores)
+        await emit_lineage_event(
+            event_name="Upload Game Scores to Snowflake",
+            upstream_resources=None,
+            downstream_resources=[
+                {
+                    "prefect.resource.id": "snowflake://DEV_DAY/PUBLIC/GAME_SCORES",
+                    "prefect.resource.lineage-group": "global",
+                    "prefect.resource.role": "table",
+                    "prefect.resource.name": "dev_day.public.game_scores",
+                }
+            ],
+            direction_of_run_from_event="upstream",
+        )
 
-        # Optionally, emit a lineage event after inserting game scores
-        # await emit_lineage_event(...)
+        logger.info(f"Inserted {len(game_scores)} game scores into Snowflake.")
 
     except Exception as e:
         logger.error(f"Failed to insert game scores: {e}")
@@ -152,7 +164,20 @@ async def insert_game_locations(game_locations: List[Dict], block_name: str):
         """
 
         # Execute the insert asynchronously
-        await asyncio.to_thread(snowflake_connector.execute_many, insert_sql, game_locations)
+        snowflake_connector.execute_many(insert_sql, game_locations)
+        await emit_lineage_event(
+            event_name="Upload Game Locations to Snowflake",
+            upstream_resources=None,
+            downstream_resources=[
+                {
+                    "prefect.resource.id": "snowflake://DEV_DAY/PUBLIC/GAME_LOCATIONS",
+                    "prefect.resource.lineage-group": "global",
+                    "prefect.resource.role": "table",
+                    "prefect.resource.name": "dev_day.public.game_locations",
+                }
+            ],
+            direction_of_run_from_event="upstream",
+        )
         logger.info(f"Inserted {len(game_locations)} game locations into Snowflake.")
 
         # Optionally, emit a lineage event after inserting game locations
