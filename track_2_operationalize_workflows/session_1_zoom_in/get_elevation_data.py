@@ -8,30 +8,26 @@ from prefect_snowflake import SnowflakeCredentials
 from prefect_snowflake.database import SnowflakeConnector
 from prefect._experimental.lineage import emit_lineage_event
 import asyncio
-
-
+from resources import (
+    OPEN_METEO_ELEVATION_API,
+    SNOWFLAKE_GAME_LOCATIONS,
+    SNOWFLAKE_ELEVATION_DATA,
+)
 
 
 @task
-async def get_city_data():
+async def fetch_unique_city_locations():
     snowflake_connector = await SnowflakeConnector.load("dev-day-connector")
 
     with snowflake_connector as connector:
         locations = connector.fetch_many(
-            "SELECT DISTINCT venue_city, venue_latitude, venue_longitude FROM DEV_DAY.PUBLIC.GAME_LOCATIONS;", size=100
+            f"SELECT DISTINCT venue_city, venue_latitude, venue_longitude FROM {connector.database}.PUBLIC.GAME_LOCATIONS;",
+            size=100,
         )
 
-
         await emit_lineage_event(
-            event_name="Get Game Locations to Snowflake",
-            upstream_resources=[
-                {
-                    "prefect.resource.id": "snowflake://DEV_DAY/PUBLIC/GAME_LOCATIONS",
-                    "prefect.resource.lineage-group": "global",
-                    "prefect.resource.role": "table",
-                    "prefect.resource.name": "dev_day.public.game_locations",
-                }
-            ],
+            event_name=f"Get Game Locations to Snowflake; N Rows: {len(locations)}",
+            upstream_resources=[SNOWFLAKE_GAME_LOCATIONS],
             downstream_resources=None,
             direction_of_run_from_event="downstream",
         )
@@ -40,8 +36,7 @@ async def get_city_data():
 
 
 @task
-async def get_elevation(latitude: float, longitude: float) -> float:
-
+async def fetch_elevation_for_coordinates(latitude: float, longitude: float) -> float:
     # for _, lat, long in locations:
     #  get_elevation(lat, long)
 
@@ -50,15 +45,8 @@ async def get_elevation(latitude: float, longitude: float) -> float:
     )
 
     await emit_lineage_event(
-        event_name="get_elevation_data",
-        upstream_resources=[
-            {
-                "prefect.resource.id": "api://api.open-meteo.com/v1/elevation",
-                "prefect.resource.lineage-group": "global",
-                "prefect.resource.role": "api",
-                "prefect.resource.name": "api.open-meteo.elevation",
-            }
-        ],
+        event_name=f"Fetch Elevation Data for Coordinates; Latitude: {latitude}, Longitude: {longitude}",
+        upstream_resources=[OPEN_METEO_ELEVATION_API],
         downstream_resources=None,
         direction_of_run_from_event="downstream",
     )
@@ -67,54 +55,47 @@ async def get_elevation(latitude: float, longitude: float) -> float:
 
 
 @task
-async def setup_table(block_name: str, locations: list, elevation: list) -> None:
+async def create_and_insert_elevation_data(
+    block_name: str, locations: list, elevation: list
+) -> None:
+    snowflake_connector = await SnowflakeConnector.load(block_name)
+    snowflake_connector.execute(
+        f"CREATE TABLE IF NOT EXISTS {snowflake_connector.database}.PUBLIC.ELEVATION_DATA (city varchar, lat float, lon float, elevation float);"
+    )
+    snowflake_connector.execute_many(
+        "INSERT INTO elevation_data (city, lat, lon, elevation) VALUES (%(city)s, %(lat)s, %(lon)s, %(elevation)s);",
+        seq_of_parameters=[
+            {
+                "city": location[0],
+                "lat": location[1],
+                "lon": location[2],
+                "elevation": elev,
+            }
+            for location, elev in zip(locations, elevation)
+        ],
+    )
 
-    connector = await SnowflakeConnector.load(block_name)
-    connector.execute(
-            "CREATE TABLE IF NOT EXISTS elevation_data (city varchar, lat float, lon float, elevation float);"
-        )
-    connector.execute_many(
-            "INSERT INTO elevation_data (city, lat, lon, elevation) VALUES (%(city)s, %(lat)s, %(lon)s, %(elevation)s);",
-            seq_of_parameters=[
-                {
-                    "city": location[0],
-                    "lat": location[1],
-                    "lon": location[2],
-                    "elevation": elev,
-                }
-                for location, elev in zip(locations, elevation)
-            ],
-        )
-    
     await emit_lineage_event(
-            event_name="Upload Elevation Data to Snowflake",
-            upstream_resources=None,
-            downstream_resources=[
-                {
-                    "prefect.resource.id": "snowflake://DEV_DAY/PUBLIC/ELEVATION_DATA",
-                    "prefect.resource.lineage-group": "global",
-                    "prefect.resource.role": "table",
-                    "prefect.resource.name": "dev_day.public.elevation_data",
-                }
-            ],
-            direction_of_run_from_event="upstream",
-        )
+        event_name=f"Upload Elevation Data to Snowflake; N Rows: {len(locations)}",
+        upstream_resources=None,
+        downstream_resources=[SNOWFLAKE_ELEVATION_DATA],
+        direction_of_run_from_event="upstream",
+    )
 
 
 @flow
-async def main_elevation():
-
-    locations = await get_city_data()
+async def process_and_store_elevation_data():
+    locations = await fetch_unique_city_locations()
 
     elevations = []
     for _, lat, long in locations:
-        elevation = await get_elevation(lat, long)
+        elevation = await fetch_elevation_for_coordinates(lat, long)
 
         print(elevation)
         elevations.append(elevation)
 
-    await setup_table("dev-day-connector", locations, elevations)
+    await create_and_insert_elevation_data("dev-day-connector", locations, elevations)
 
 
 if __name__ == "__main__":
-    asyncio.run(main_elevation())
+    asyncio.run(process_and_store_elevation_data())

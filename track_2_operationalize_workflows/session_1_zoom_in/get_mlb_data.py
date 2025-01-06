@@ -12,13 +12,17 @@ import asyncio
 from prefect.futures import wait
 
 # Importing Snowflake helper tasks
-from snowflake_helper import setup_tables, insert_game_scores, insert_game_locations
+from snowflake_helper import (
+    create_mlb_snowflake_tables,
+    insert_game_scores_into_snowflake,
+    insert_game_locations_into_snowflake,
+)
 from prefect._experimental.lineage import emit_lineage_event
-from resources import MLB_API_SCHEDULE
+from resources import MLB_API_SCHEDULE, MLB_API_SCORE, MLB_API_LOCATION
 
 
 @task
-async def get_recent_games(
+async def retrieve_recent_game_ids(
     team_ids: List[int], start_date: str, end_date: str
 ) -> List[str]:
     """
@@ -48,19 +52,12 @@ async def get_recent_games(
 
 
 @task(retries=5, retry_delay_seconds=exponential_backoff(backoff_factor=10))
-async def fetch_game_score(game_id: str) -> Dict:
+async def fetch_game_score_data(game_id: str) -> Dict:
     boxscore = statsapi.boxscore_data(game_id)
 
     await emit_lineage_event(
         event_name=f"Fetch Game Score; Game ID: {game_id}",
-        upstream_resources=[
-            {
-                "prefect.resource.id": "api://statsapi.mlb.com/api/{ver}/game/{gamePk}/boxscore",
-                "prefect.resource.lineage-group": "global",
-                "prefect.resource.role": "api",
-                "prefect.resource.name": "api.statsapi.mlb.game.gamePk.boxscore",
-            }
-        ],
+        upstream_resources=[MLB_API_SCORE],
         downstream_resources=None,
         direction_of_run_from_event="downstream",
     )
@@ -110,7 +107,7 @@ async def fetch_game_score(game_id: str) -> Dict:
 
 
 @task(retries=5, retry_delay_seconds=exponential_backoff(backoff_factor=10))
-async def fetch_game_location(game_id: str) -> Dict:
+async def fetch_game_location_data(game_id: str) -> Dict:
     """
     Fetch game location details for each game.
     """
@@ -118,14 +115,7 @@ async def fetch_game_location(game_id: str) -> Dict:
 
     await emit_lineage_event(
         event_name=f"Fetch Game Location; Game ID: {game_id}",
-        upstream_resources=[
-            {
-                "prefect.resource.id": "api://statsapi.mlb.com/api/{ver}/game/{gamePk}/feed/live",
-                "prefect.resource.lineage-group": "global",
-                "prefect.resource.role": "api",
-                "prefect.resource.name": "api.statsapi.mlb.game.gamePk.feed.live",
-            }
-        ],
+        upstream_resources=[MLB_API_LOCATION],
         downstream_resources=None,
         direction_of_run_from_event="downstream",
     )
@@ -159,14 +149,23 @@ async def fetch_game_location(game_id: str) -> Dict:
 
 
 @flow
-async def get_game_scores(game_ids: List[str]) -> List[Dict]:
+async def fetch_and_store_mlb_raw_data(
+    team_ids: List[int], start_date: str, end_date: str, snowflake_block: str
+):
     """
-    Fetch scores for each game.
+    Prefect flow to fetch game scores and locations for multiple teams, then insert them into Snowflake.
     """
+    # Step 1: Set up Snowflake tables
+    await create_mlb_snowflake_tables(block_name=snowflake_block)
+
+    # Step 2: Get recent game IDs for all teams
+    game_ids = await retrieve_recent_game_ids(team_ids, start_date, end_date)
+
+    # Step 3: Fetch game scores
     scores = []
     tasks = []
     for game_id in game_ids:
-        task_future = fetch_game_score.submit(game_id)
+        task_future = fetch_game_score_data.submit(game_id)
         tasks.append(task_future)
         print(f"Submitted score fetch for game ID {game_id}.")
     # Gather all results asynchronously
@@ -175,18 +174,11 @@ async def get_game_scores(game_ids: List[str]) -> List[Dict]:
     # Filter out any empty dictionaries in case of missing data
     scores = [score for score in scores if score]
 
-    return scores
-
-
-@flow
-async def get_game_locations_flow(game_ids: List[str]) -> List[Dict]:
-    """
-    Fetch game location details for each game.
-    """
+    # Step 4: Fetch game locations
     locations = []
     tasks = []
     for game_id in game_ids:
-        task_future = fetch_game_location.submit(game_id)
+        task_future = fetch_game_location_data.submit(game_id)
         tasks.append(task_future)
         print(f"Submitted location fetch for game ID {game_id}.")
     # Gather all results asynchronously
@@ -194,31 +186,14 @@ async def get_game_locations_flow(game_ids: List[str]) -> List[Dict]:
         locations.append(task.result())
     # Filter out any empty dictionaries in case of missing data
     locations = [location for location in locations if location]
-    return locations
-
-
-@flow
-async def mlb_simple_flow(
-    team_ids: List[int], start_date: str, end_date: str, snowflake_block: str
-):
-    """
-    Prefect flow to fetch game scores and locations for multiple teams, then insert them into Snowflake.
-    """
-    # Step 1: Set up Snowflake tables
-    await setup_tables(block_name=snowflake_block)
-
-    # Step 2: Get recent game IDs for all teams
-    game_ids = await get_recent_games(team_ids, start_date, end_date)
-
-    # Step 3: Fetch game scores
-    scores = await get_game_scores(game_ids)
-
-    # Step 4: Fetch game locations
-    locations = await get_game_locations_flow(game_ids)
 
     # Step 5: Insert data into Snowflake
-    await insert_game_scores(game_scores=scores, block_name=snowflake_block)
-    await insert_game_locations(game_locations=locations, block_name=snowflake_block)
+    await insert_game_scores_into_snowflake(
+        game_scores=scores, block_name=snowflake_block
+    )
+    await insert_game_locations_into_snowflake(
+        game_locations=locations, block_name=snowflake_block
+    )
 
     print("MLB Simple Flow Completed Successfully.")
 
@@ -242,7 +217,7 @@ if __name__ == "__main__":
     SNOWFLAKE_BLOCK_NAME = "dev-day-staging"  # Replace with your actual block name
 
     asyncio.run(
-        mlb_simple_flow(
+        fetch_and_store_mlb_raw_data(
             team_ids=TEAM_IDS,
             start_date=START_DATE,
             end_date=END_DATE,
