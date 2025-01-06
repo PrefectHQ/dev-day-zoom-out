@@ -84,7 +84,7 @@ async def create_and_insert_elevation_data(
 
 
 @flow
-async def process_and_store_elevation_data():
+async def process_and_store_elevation_data(snowflake_block_name: str):
     locations = await fetch_unique_city_locations()
 
     elevations = []
@@ -94,8 +94,9 @@ async def process_and_store_elevation_data():
         print(elevation)
         elevations.append(elevation)
 
-    await create_and_insert_elevation_data("dev-day-connector", locations, elevations)
+    await create_and_insert_elevation_data(snowflake_block_name, locations, elevations)
 
 
 if __name__ == "__main__":
-    asyncio.run(process_and_store_elevation_data())
+    SNOWFLAKE_BLOCK_NAME = "dev-day-staging"
+    asyncio.run(process_and_store_elevation_data(SNOWFLAKE_BLOCK_NAME))
