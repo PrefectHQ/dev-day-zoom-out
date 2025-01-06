@@ -10,79 +10,101 @@ import duckdb
 import random
 import time
 
-#Custom retry handler
 def retry_handler(task, task_run, state) -> bool:
     """Custom retry handler that specifies when to retry a task"""
     try:
         # Attempt to get the result of the task
         state.result()
     except Exception as e:
-        #If Exception is a TimeoutError, retry
+        # If Exception is a TimeoutError, retry
         if isinstance(e, TimeoutError):
             return True
-        #For any other exception, do not retry
+        # For any other exception, do not retry
         return False
 
-#The retry_condition_fn parameter allows us to specify a custom retry condition function
+
+# The retry_condition_fn parameter allows us to specify a custom retry condition function
 @task(retries=10, retry_condition_fn=retry_handler)
 def get_recent_games(team_id, start_date, end_date):
     # Generate random number
     failure_chance = random.random()
-    
+
     # Simulate different types of failures
     if failure_chance < 0.3:
-        time.sleep(2) #Allow us to see the retries in action
-        raise Exception("Simulated API failure: MLB Stats API is temporarily unavailable")
+        time.sleep(2)  # Allow us to see the retries in action
+        raise Exception(
+            "Simulated API failure: MLB Stats API is temporarily unavailable"
+        )
     elif failure_chance >= 0.4:
-        time.sleep(2) #Allow us to see the retries in action
-        raise TimeoutError("Simulated timeout: Request took too long") # Simulate empty response
-    
+        time.sleep(2)  # Allow us to see the retries in action
+        raise TimeoutError(
+            "Simulated timeout: Request took too long"
+        )  # Simulate empty response
+
     # Normal operation
     schedule = statsapi.schedule(team=team_id, start_date=start_date, end_date=end_date)
     for game in schedule:
-        print(game['game_id'])
-    return [game['game_id'] for game in schedule]
+        print(game["game_id"])
+    return [game["game_id"] for game in schedule]
 
 
 @task
 def fetch_single_game_boxscore(game_id, start_date, end_date, team_id):
     boxscore = statsapi.boxscore_data(game_id)
-    
+
     # Extract relevant data
-    home_score = boxscore['home']['teamStats']['batting']['runs']
-    away_score = boxscore['away']['teamStats']['batting']['runs']
-    home_team = boxscore['teamInfo']['home']['teamName']
-    away_team = boxscore['teamInfo']['away']['teamName']
-    time_value = next(item['value'] for item in boxscore['gameBoxInfo'] if item['label'] == 'T')
-    
-    #Create a dictionary with the game data
+    home_score = boxscore["home"]["teamStats"]["batting"]["runs"]
+    away_score = boxscore["away"]["teamStats"]["batting"]["runs"]
+    home_team = boxscore["teamInfo"]["home"]["teamName"]
+    away_team = boxscore["teamInfo"]["away"]["teamName"]
+    time_value = next(
+        item["value"] for item in boxscore["gameBoxInfo"] if item["label"] == "T"
+    )
+
+    # Create a dictionary with the game data
     game_data = {
-        'search_start_date': start_date,
-        'search_end_date': end_date,
-        'chosen_team_id': team_id,
-        'game_id': game_id,
-        'home_team': home_team,
-        'away_team': away_team,
-        'home_score': home_score,
-        'away_score': away_score,
-        'score_differential': abs(home_score - away_score),
-        'game_time': time_value,
+        "game_id": game_id,
+        "home_team": home_team,
+        "away_team": away_team,
+        "home_score": home_score,
+        "away_score": away_score,
+        "score_differential": abs(home_score - away_score),
+        "game_time": time_value,
     }
-    
+
     print(game_data)
     return game_data
 
 
 @task
-def save_raw_data_to_file(game_data, file_name):
-    #save raw data to the raw_data folder
-    with open(file_name, "w") as outfile:
+def clean_time_value(game_data):
+    # Remove any extra text like '(1:16 delay)'
+    if "(" in game_data["game_time"]:
+        game_data["game_time"] = game_data["game_time"].split("(")[0]
+
+    # Remove any non-digit, non-colon characters
+    game_data["game_time"] = "".join(
+        char for char in game_data["game_time"] if char.isdigit() or char == ":"
+    )
+
+    hours, minutes = map(int, game_data["game_time"].split(":"))
+    game_data["game_time_in_minutes"] = hours * 60 + minutes
+
+    print(game_data)
+    return game_data
+
+
+@task
+def save_raw_data_to_file(game_data, team_id):
+    # save raw data to the raw_data folder
+    today = datetime.now().strftime("%Y-%m-%d")  # YYYY-MM-DD
+    flow_run_name = runtime.flow_run.name
+    with open(
+        f"./raw_data/{today}-{team_id}-{flow_run_name}-boxscore.json", "w"
+    ) as outfile:
         json.dump(game_data, outfile, indent=4, sort_keys=True)
-    
-    print(file_name)
-    return file_name
-        
-        
+
+
 @task
 def upload_raw_data_to_s3(file_path):
     #upload raw data to s3
@@ -141,53 +163,49 @@ def analyze_games(data_file_path):
     
     # Convert to DataFrame
     df = pd.DataFrame(game_data)
-    
-    #Get the search parameters
-    start_date = df['search_start_date'].unique()[0]
-    end_date = df['search_end_date'].unique()[0]
-    team_id = df['chosen_team_id'].unique()[0]
-    
-    # Calculate average, median, max, and min differential
-    avg_differential = float(df['score_differential'].mean())
-    median_differential = float(df['score_differential'].median())
-    max_differential = float(df['score_differential'].max())
-    min_differential = float(df['score_differential'].min())
 
-    
+    # Calculate average, median, max, and min differential
+    avg_differential = float(df["score_differential"].mean())
+    median_differential = float(df["score_differential"].median())
+    max_differential = float(df["score_differential"].max())
+    min_differential = float(df["score_differential"].min())
+
     # Calculate average, median, max, and min game time
-    avg_game_time = float(df['game_time_in_minutes'].mean())
-    median_game_time = float(df['game_time_in_minutes'].median())
-    max_game_time = float(df['game_time_in_minutes'].max())
-    min_game_time = float(df['game_time_in_minutes'].min())
-    
+    avg_game_time = float(df["game_time_in_minutes"].mean())
+    median_game_time = float(df["game_time_in_minutes"].median())
+    max_game_time = float(df["game_time_in_minutes"].max())
+    min_game_time = float(df["game_time_in_minutes"].min())
+
     # Calculate correlation between game time and score differential
-    correlation = float(df['game_time_in_minutes'].corr(df['score_differential']))
-    
+    correlation = float(df["game_time_in_minutes"].corr(df["score_differential"]))
+
     game_analysis = {
-        'search_start_date': start_date,
-        'search_end_date': end_date,
-        'chosen_team_id': team_id,
-        'max_game_time': max_game_time,
-        'min_game_time': min_game_time,
-        'median_game_time': median_game_time,
-        'average_game_time': avg_game_time,
-        'max_differential': max_differential,
-        'min_differential': min_differential,
-        'median_differential': median_differential,
-        'average_differential': avg_differential,
-        'time_differential_correlation': correlation,
+        "search_start_date": start_date,
+        "search_end_date": end_date,
+        "chosen_team_id": team_id,
+        "max_game_time": max_game_time,
+        "min_game_time": min_game_time,
+        "median_game_time": median_game_time,
+        "average_game_time": avg_game_time,
+        "max_differential": max_differential,
+        "min_differential": min_differential,
+        "median_differential": median_differential,
+        "average_differential": avg_differential,
+        "time_differential_correlation": correlation,
     }
     print(game_analysis)
     return game_analysis
 
+
 @task
-def save_analysis_to_file(game_analysis, file_name):
-    # Method 1: Single row format
-    df = pd.DataFrame([game_analysis])
-    df.to_parquet(file_name)
-    
-    print(file_name)
-    return file_name
+def save_analysis_to_file(game_analysis, team_id):
+    today = datetime.now().strftime("%Y-%m-%d")  # YYYY-MM-DD
+    flow_run_name = runtime.flow_run.name
+    with open(
+        f"./boxscore_analysis/{today}-{team_id}-{flow_run_name}-game-analysis.json", "w"
+    ) as outfile:
+        json.dump(game_analysis, outfile, indent=4, sort_keys=True)
+
 
 @task
 def game_analysis_artifact(game_analysis, game_data_path):
@@ -197,9 +215,8 @@ def game_analysis_artifact(game_analysis, game_data_path):
     
     # Now create the DataFrame from the loaded data
     df = pd.DataFrame(game_data)
-    
-    # Create the markdown report
-    markdown_report=f""" # Game Analysis Report
+
+    markdown_report = f""" # Game Analysis Report
 ## Search Parameters
 Search Start Date: {game_analysis['search_start_date']}
 Search End Date: {game_analysis['search_end_date']}
@@ -223,7 +240,7 @@ Correlation between game time and score differential: {game_analysis['time_diffe
     create_markdown_artifact(
         key="game-analysis",
         markdown=markdown_report,
-        description="Game analysis report"
+        description="Game analysis report",
     )
     
 @task
@@ -257,40 +274,25 @@ def load_parquet_to_duckdb(parquet_file_path):
 def mlb_flow(team_id, start_date, end_date):
     # Get recent games
     game_ids = get_recent_games(team_id, start_date, end_date)
-    
+
     # Fetch boxscore for each game
-    game_data = [fetch_single_game_boxscore(game_id, start_date, end_date, team_id) for game_id in game_ids]
-    
-    #Define file path for raw data
-    today = datetime.now().strftime("%Y-%m-%d") #YYYY-MM-DD
-    flow_run_name = runtime.flow_run.name
-    raw_file_path = f"./raw_data/{today}-{team_id}-{flow_run_name}-boxscore.json"
-    
-    # Save raw data to a local folder
-    save_raw_data_to_file(game_data, raw_file_path)
-    
-    # Upload raw data to s3
-    s3_file_path = upload_raw_data_to_s3(raw_file_path)
-    
-    #Download raw data from s3
-    raw_data = download_raw_data_from_s3(s3_file_path)
-    
+    game_data = [fetch_single_game_boxscore(game_id) for game_id in game_ids]
+
+    # Save raw data to a file
+    save_raw_data_to_file(game_data, team_id)
+
     # Clean the time value
-    clean_data = clean_time_value(raw_data)
-    
+    game_data = [clean_time_value(game_data) for game_data in game_data]
+
     # Analyze the results
-    results = analyze_games(clean_data)
-    
-    # Save the results to a parquet file
-    parquet_file_path = f"./boxscore_parquet/{today}-{team_id}-{flow_run_name}-game-analysis.parquet"
-    save_analysis_to_file(results, parquet_file_path)
-    
-    # Load the results to duckdb
-    load_parquet_to_duckdb(parquet_file_path)
-    
+    results = analyze_games(game_data, start_date, end_date, team_id)
+
+    # Save the results to a file
+    save_analysis_to_file(results, team_id)
+
     # Save the results to an artifact
-    game_analysis_artifact(results, raw_data)
-    
-    
+    game_analysis_artifact(results, game_data)
+
+
 if __name__ == "__main__":
-    mlb_flow(143, '06/01/2024', '06/30/2024')
+    mlb_flow_custom_retry(143, "06/01/2024", "08/31/2024")
