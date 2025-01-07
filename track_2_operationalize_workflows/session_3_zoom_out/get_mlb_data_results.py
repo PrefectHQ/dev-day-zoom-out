@@ -23,7 +23,7 @@ from resources import MLB_API_SCHEDULE
 s3_results = S3Bucket.load("s3-results")
 
 
-@task(result_storage_key="recent_games", cache_expiration=timedelta(seconds=50))
+@task(result_storage_key="recent_games")
 async def get_recent_games(
     team_ids: List[int], start_date: str, end_date: str
 ) -> List[str]:
@@ -49,11 +49,10 @@ async def get_recent_games(
 
     # Remove duplicates and ensure all are digits
     unique_game_ids = list({gid for gid in all_game_ids if gid.isdigit()})
-    sleep(timedelta(minutes=6).total_seconds())
     return unique_game_ids
 
 
-@task(retries=5, retry_delay_seconds=exponential_backoff(backoff_factor=10))
+@task(retries=5, retry_delay_seconds=exponential_backoff(backoff_factor=10), result_storage_key="game_score")
 async def fetch_game_score(game_id: str) -> Dict:
     boxscore = statsapi.boxscore_data(game_id)
 
@@ -171,7 +170,7 @@ async def get_game_scores(game_ids: List[str]) -> List[Dict]:
     """
     scores = []
     tasks = []
-    for game_id in game_ids:
+    for game_id in game_ids[0:10]:
         task_future = fetch_game_score.submit(game_id)
         tasks.append(task_future)
         print(f"Submitted score fetch for game ID {game_id}.")
@@ -180,18 +179,17 @@ async def get_game_scores(game_ids: List[str]) -> List[Dict]:
         scores.append(task.result())
     # Filter out any empty dictionaries in case of missing data
     scores = [score for score in scores if score]
-    sleep(timedelta(minutes=6).total_seconds())
     return scores
 
 
-@flow
+@flow(log_prints=True, result_storage=s3_results)
 async def get_game_locations_flow(game_ids: List[str]) -> List[Dict]:
     """
     Fetch game location details for each game.
     """
     locations = []
     tasks = []
-    for game_id in game_ids:
+    for game_id in game_ids[0:10]:
         task_future = fetch_game_location.submit(game_id)
         tasks.append(task_future)
         print(f"Submitted location fetch for game ID {game_id}.")
@@ -203,7 +201,7 @@ async def get_game_locations_flow(game_ids: List[str]) -> List[Dict]:
     return locations
 
 
-@flow
+@flow(result_storage=s3_results)
 async def mlb_simple_flow(
     team_ids: List[int], start_date: str, end_date: str, snowflake_block: str
 ):
@@ -225,7 +223,7 @@ async def mlb_simple_flow(
     # Step 5: Insert data into Snowflake
     await insert_game_scores(game_scores=scores, block_name=snowflake_block)
     await insert_game_locations(game_locations=locations, block_name=snowflake_block)
-
+    sleep(timedelta(minutes=2).total_seconds())
     print("MLB Simple Flow Completed Successfully.")
 
 

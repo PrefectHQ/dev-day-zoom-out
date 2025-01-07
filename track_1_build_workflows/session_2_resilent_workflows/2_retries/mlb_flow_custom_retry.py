@@ -1,14 +1,45 @@
 from prefect import flow, task, runtime
 from prefect.artifacts import create_markdown_artifact
+from prefect_aws.s3 import S3Bucket
+from prefect.blocks.system import Secret
 from datetime import datetime
 import statsapi
 import json
 import pandas as pd
+import duckdb
+import random
+import time
+
+def retry_handler(task, task_run, state) -> bool:
+    """Custom retry handler that specifies when to retry a task"""
+    try:
+        # Attempt to get the result of the task
+        state.result()
+    except Exception as e:
+        # If Exception is a TimeoutError, retry
+        if isinstance(e, TimeoutError):
+            return True
+        # For any other exception, do not retry
+        return False
 
 
-@task
+# The retry_condition_fn parameter allows us to specify a custom retry condition function
+@task(retries=10, retry_condition_fn=retry_handler)
 def get_recent_games(team_name, start_date, end_date):
-    '''This task will fetch the schedule for the provided team and date range and return the game ids.'''
+    # Generate random number
+    failure_chance = random.random()
+
+    # Simulate different types of failures
+    if failure_chance < 0.3:
+        time.sleep(2)  # Allow us to see the retries in action
+        raise Exception(
+            "Simulated API failure: MLB Stats API is temporarily unavailable"
+        )
+    elif failure_chance >= 0.4:
+        time.sleep(2) #Allow us to see the retries in action
+        raise TimeoutError("Simulated timeout: Request took too long") # Simulate empty response
+    
+    # If no failure, proceed with actual API call
     team = statsapi.lookup_team(team_name)
     schedule = statsapi.schedule(team=team[0]["id"], start_date=start_date, end_date=end_date)
     for game in schedule:
@@ -43,7 +74,7 @@ def fetch_single_game_boxscore(game_id, start_date, end_date, team_name):
         'score_differential': abs(home_score - away_score),
         'game_time': time_value,
     }
-    
+
     print(game_data)
     return game_data
 
@@ -55,55 +86,70 @@ def save_raw_data_to_file(game_data, file_name):
     with open(file_name, "w") as outfile:
         json.dump(game_data, outfile, indent=4, sort_keys=True)
 
-    print(file_name)
-    return file_name
 
+@task
+def upload_raw_data_to_s3(file_path):
+    '''This task will upload the raw data to s3.'''
+    
+    s3_bucket = S3Bucket.load("mlb-raw-data")
+    s3_bucket_path = s3_bucket.upload_from_path(file_path)
+    
+    print(s3_bucket_path)
+    return s3_bucket_path
+    
+
+@task
+def download_raw_data_from_s3(s3_file_path):
+    '''Download the raw data from s3.'''
+    
+    s3_bucket = S3Bucket.load("mlb-raw-data")
+    local_file_path = f"./boxscore_analysis/{s3_file_path}"
+    s3_bucket.download_object_to_path(s3_file_path, local_file_path)
+    
+    return local_file_path
 
 @task
 def clean_time_value(data_file_path):
     '''This task will clean the time value.'''
     
     try:
-        with open(data_file_path, "r") as f:
+        with open(data_file_path, 'r') as f:
             game_data_list = json.load(f)
     except FileNotFoundError:
-        raise ValueError(f"File not found: {data_file_path}")
+        raise ValueError(f"File not found: {data_file_path}") 
     except json.JSONDecodeError:
         raise ValueError(f"Invalid JSON file: {data_file_path}")
-
+    
     # Process each game in the list
     for game_data in game_data_list:
         # Remove any extra text like '(1:16 delay)'
-        if "(" in game_data["game_time"]:
-            game_data["game_time"] = game_data["game_time"].split("(")[0]
-
+        if '(' in game_data['game_time']:
+            game_data['game_time'] = game_data['game_time'].split('(')[0]
+        
         # Remove any non-digit, non-colon characters
-        game_data["game_time"] = "".join(
-            char for char in game_data["game_time"] if char.isdigit() or char == ":"
-        )
-
-        hours, minutes = map(int, game_data["game_time"].split(":"))
-        game_data["game_time_in_minutes"] = hours * 60 + minutes
-
+        game_data['game_time'] = ''.join(char for char in game_data['game_time'] if char.isdigit() or char == ':')
+        
+        hours, minutes = map(int, game_data['game_time'].split(':'))
+        game_data['game_time_in_minutes'] = hours * 60 + minutes
+    
     # Save the modified data back to the file
-    with open(data_file_path, "w") as f:
+    with open(data_file_path, 'w') as f:
         json.dump(game_data_list, f, indent=4, sort_keys=True)
     
     return data_file_path
-
-
+    
 @task
 def analyze_games(data_file_path):
     '''This task will analyze the game data and return the analysis.'''
     
     try:
-        with open(data_file_path, "r") as f:
+        with open(data_file_path, 'r') as f:
             game_data = json.load(f)
     except FileNotFoundError:
         raise ValueError(f"File not found: {data_file_path}")
     except json.JSONDecodeError:
         raise ValueError(f"Invalid JSON file: {data_file_path}")
-
+    
     # Convert to DataFrame
     df = pd.DataFrame(game_data)
     
@@ -117,11 +163,6 @@ def analyze_games(data_file_path):
     median_differential = float(df['score_differential'].median())
     max_differential = float(df['score_differential'].max())
     min_differential = float(df['score_differential'].min())
-
-    # Get the search parameters
-    start_date = df["search_start_date"].unique()[0]
-    end_date = df["search_end_date"].unique()[0]
-    team_id = df["chosen_team_id"].unique()[0]
 
     # Calculate average, median, max, and min differential
     avg_differential = float(df["score_differential"].mean())
@@ -163,23 +204,21 @@ def save_analysis_to_file(game_analysis, file_name):
     # Method 1: Single row format
     df = pd.DataFrame([game_analysis])
     df.to_parquet(file_name)
-
+    
     print(file_name)
     return file_name
-
 
 @task
 def game_analysis_artifact(game_analysis, game_data_path):
     '''This task will create an artifact with the game analysis.'''
     
     # First read the JSON data from the file
-    with open(game_data_path, "r") as f:
+    with open(game_data_path, 'r') as f:
         game_data = json.load(f)
-
+    
     # Now create the DataFrame from the loaded data
     df = pd.DataFrame(game_data)
 
-    # Create the markdown report
     markdown_report = f""" # Game Analysis Report
 ## Search Parameters
 Search Start Date: {game_analysis['search_start_date']}
@@ -206,6 +245,34 @@ Correlation between game time and score differential: {game_analysis['time_diffe
         markdown=markdown_report,
         description="Game analysis report",
     )
+    
+@task
+def load_parquet_to_duckdb(parquet_file_path, team_name):
+    '''This task will load the parquet file to duckdb.'''
+    
+    #Connect to duckdb
+    secret_block = Secret.load("mother-duck-test")
+    # Access the stored secret
+    duck_token = secret_block.get()
+    duckdb_conn = duckdb.connect(f"md:?motherduck_token={duck_token}")
+    
+    #Create a table in duckdb
+    duckdb_conn.execute(f"""CREATE TABLE IF NOT EXISTS boxscore_analysis_{team_name} (
+        search_start_date TEXT, 
+        search_end_date TEXT, 
+        chosen_team_name TEXT, 
+        max_game_time FLOAT, 
+        min_game_time FLOAT, 
+        median_game_time FLOAT, 
+        average_game_time FLOAT, 
+        max_differential FLOAT, 
+        min_differential FLOAT, 
+        median_differential FLOAT, 
+        average_differential FLOAT, 
+        time_differential_correlation FLOAT)""")
+    
+    # Use the COPY command to load the Parquet file into MotherDuck
+    duckdb_conn.execute(f"COPY boxscore_analysis FROM '{parquet_file_path}' (FORMAT 'parquet')")
 
 
 @flow
@@ -224,9 +291,15 @@ def mlb_flow(team_name, start_date, end_date):
     # Save raw data to a local folder
     save_raw_data_to_file(game_data, raw_file_path)
     
-    # Clean the time value
-    clean_data = clean_time_value(raw_file_path)
+    # Upload raw data to s3
+    s3_file_path = upload_raw_data_to_s3(raw_file_path)
     
+    #Download raw data from s3
+    raw_data = download_raw_data_from_s3(s3_file_path)
+    
+    # Clean the time value
+    game_data = [clean_time_value(game_data) for game_data in game_data]
+
     # Analyze the results
     results = analyze_games(clean_data)
     
@@ -234,19 +307,12 @@ def mlb_flow(team_name, start_date, end_date):
     parquet_file_path = f"./boxscore_parquet/{today}-{team_name}-{flow_run_name}-game-analysis.parquet"
     save_analysis_to_file(results, parquet_file_path)
     
+    # Load the results to duckdb
+    load_parquet_to_duckdb(parquet_file_path, team_name)
+    
     # Save the results to an artifact
-    game_analysis_artifact(results, clean_data)
-    
-    
+    game_analysis_artifact(results, game_data)
+
+
 if __name__ == "__main__":
     mlb_flow("marlins", '06/01/2024', '06/30/2024')
-
-    # mlb_flow.serve(
-    #     parameters={
-    #         #"repos": ["python/cpython", "prefectHQ/prefect"],
-    #         "team_name": "marlins",
-    #         "start_date": "06/01/2024",
-    #         "end_date": "06/30/2024"
-    #     },
-    #     cron="30 * * * *"
-    # )

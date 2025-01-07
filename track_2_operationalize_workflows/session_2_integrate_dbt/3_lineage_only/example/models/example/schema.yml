@@ -1,0 +1,55 @@
+
+version: 2
+
+sources:
+  - name: dev_day_track_2
+    database: dev_day
+    schema: public
+    tables:
+      - name: elevation_data
+        columns:
+          - name: city
+          - name: lat
+          - name: lon
+          - name: elevation
+      - name: game_locations
+        columns:
+          - name: game_id
+          - name: venue_id
+          - name: venue_city
+          - name: venue_state
+          - name: venue_postal_code
+          - name: venue_country
+          - name: venue_latitude
+          - name: venue_longitude
+      - name: game_scores
+        columns:
+          - name: game_id
+          - name: home_team_id
+          - name: home_team
+          - name: away_team_id
+          - name: away_team
+          - name: home_score
+          - name: away_score
+          - name: score_differential
+          - name: game_time
+
+models:
+  - name: venue_elevation
+    description: "This model joins the game_locations and elevation_data tables to get the elevation of each venue"
+    columns:
+      - name: venue_id
+      - name: venue_city
+      - name: venue_state
+      - name: venue_postal_code
+      - name: venue_country
+      - name: elevation
+    meta:
+      prefect:
+        upstream_resources:
+          - id: snowflake://DEV_DAY/PUBLIC/GAME_SCORES
+            name: dev_day.public.game_scores
+          - id: snowflake://DEV_DAY/PUBLIC/GAME_LOCATIONS
+            name: dev_day.public.game_locations
+          - id: snowflake://DEV_DAY/PUBLIC/ELEVATION_DATA
+            name: dev_day.public.elevation_data

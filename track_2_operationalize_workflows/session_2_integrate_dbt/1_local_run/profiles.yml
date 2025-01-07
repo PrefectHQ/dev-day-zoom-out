@@ -1,0 +1,8 @@
+example:
+  outputs:
+    dev:
+      type: duckdb
+      path: dev.duckdb
+      threads: 1
+
+  target: dev

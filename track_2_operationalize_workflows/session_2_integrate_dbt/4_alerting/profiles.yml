@@ -1,0 +1,18 @@
+example:
+  outputs:
+    dev:
+      type: duckdb
+      path: dev.duckdb
+      threads: 1
+
+    prod:
+      type: snowflake
+      account: "{{ prefect.blocks.snowflake-credentials.warehouse-access.account }}"
+      user: "{{ prefect.blocks.snowflake-credentials.warehouse-access.user }}"
+      password: "{{ prefect.blocks.snowflake-credentials.warehouse-access.password }}"
+      database: "{{ prefect.blocks.snowflake-connector.dev-day-connector.database }}"
+      schema: "{{ prefect.blocks.snowflake-connector.dev-day-connector.schema }}"
+      warehouse: "{{ prefect.blocks.snowflake-connector.dev-day-connector.warehouse }}"
+      threads: 4
+
+  target: "{{ prefect.variables.target }}"

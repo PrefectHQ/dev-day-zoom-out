@@ -22,7 +22,7 @@ cd dev-day-zoom-out
 For macOS/Linux:
 
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh   # TK maybe use homebrew instead. Jeremiah might have found an issue.
+curl -LsSf https://astral.sh/uv/install.sh | sh  
 ```
 
 For Windows:
