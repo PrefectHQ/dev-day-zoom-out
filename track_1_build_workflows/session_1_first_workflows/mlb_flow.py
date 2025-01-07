@@ -5,29 +5,32 @@ import statsapi
 import json
 import pandas as pd
 
+
 @task
 def get_recent_games(team_name, start_date, end_date):
     '''This task will fetch the schedule for the provided team and date range and return the game ids.'''
     team = statsapi.lookup_team(team_name)
     schedule = statsapi.schedule(team=team[0]["id"], start_date=start_date, end_date=end_date)
     for game in schedule:
-        print(game['game_id'])
-    return [game['game_id'] for game in schedule]
+        print(game["game_id"])
+    return [game["game_id"] for game in schedule]
 
 
 @task
 def fetch_single_game_boxscore(game_id, start_date, end_date, team_name):
     '''This task will fetch the boxscore for a single game and return the game data.'''
     boxscore = statsapi.boxscore_data(game_id)
-    
+
     # Extract relevant data
-    home_score = boxscore['home']['teamStats']['batting']['runs']
-    away_score = boxscore['away']['teamStats']['batting']['runs']
-    home_team = boxscore['teamInfo']['home']['teamName']
-    away_team = boxscore['teamInfo']['away']['teamName']
-    time_value = next(item['value'] for item in boxscore['gameBoxInfo'] if item['label'] == 'T')
-    
-    #Create a dictionary with the game data
+    home_score = boxscore["home"]["teamStats"]["batting"]["runs"]
+    away_score = boxscore["away"]["teamStats"]["batting"]["runs"]
+    home_team = boxscore["teamInfo"]["home"]["teamName"]
+    away_team = boxscore["teamInfo"]["away"]["teamName"]
+    time_value = next(
+        item["value"] for item in boxscore["gameBoxInfo"] if item["label"] == "T"
+    )
+
+    # Create a dictionary with the game data
     game_data = {
         'search_start_date': start_date,
         'search_end_date': end_date,
@@ -51,52 +54,56 @@ def save_raw_data_to_file(game_data, file_name):
     
     with open(file_name, "w") as outfile:
         json.dump(game_data, outfile, indent=4, sort_keys=True)
-    
+
     print(file_name)
     return file_name
+
 
 @task
 def clean_time_value(data_file_path):
     '''This task will clean the time value.'''
     
     try:
-        with open(data_file_path, 'r') as f:
+        with open(data_file_path, "r") as f:
             game_data_list = json.load(f)
     except FileNotFoundError:
-        raise ValueError(f"File not found: {data_file_path}") 
+        raise ValueError(f"File not found: {data_file_path}")
     except json.JSONDecodeError:
         raise ValueError(f"Invalid JSON file: {data_file_path}")
-    
+
     # Process each game in the list
     for game_data in game_data_list:
         # Remove any extra text like '(1:16 delay)'
-        if '(' in game_data['game_time']:
-            game_data['game_time'] = game_data['game_time'].split('(')[0]
-        
+        if "(" in game_data["game_time"]:
+            game_data["game_time"] = game_data["game_time"].split("(")[0]
+
         # Remove any non-digit, non-colon characters
-        game_data['game_time'] = ''.join(char for char in game_data['game_time'] if char.isdigit() or char == ':')
-        
-        hours, minutes = map(int, game_data['game_time'].split(':'))
-        game_data['game_time_in_minutes'] = hours * 60 + minutes
-    
+        game_data["game_time"] = "".join(
+            char for char in game_data["game_time"] if char.isdigit() or char == ":"
+        )
+
+        hours, minutes = map(int, game_data["game_time"].split(":"))
+        game_data["game_time_in_minutes"] = hours * 60 + minutes
+
     # Save the modified data back to the file
-    with open(data_file_path, 'w') as f:
+    with open(data_file_path, "w") as f:
         json.dump(game_data_list, f, indent=4, sort_keys=True)
     
     return data_file_path
-    
+
+
 @task
 def analyze_games(data_file_path):
     '''This task will analyze the game data and return the analysis.'''
     
     try:
-        with open(data_file_path, 'r') as f:
+        with open(data_file_path, "r") as f:
             game_data = json.load(f)
     except FileNotFoundError:
         raise ValueError(f"File not found: {data_file_path}")
     except json.JSONDecodeError:
         raise ValueError(f"Invalid JSON file: {data_file_path}")
-    
+
     # Convert to DataFrame
     df = pd.DataFrame(game_data)
     
@@ -111,16 +118,26 @@ def analyze_games(data_file_path):
     max_differential = float(df['score_differential'].max())
     min_differential = float(df['score_differential'].min())
 
-    
+    # Get the search parameters
+    start_date = df["search_start_date"].unique()[0]
+    end_date = df["search_end_date"].unique()[0]
+    team_id = df["chosen_team_id"].unique()[0]
+
+    # Calculate average, median, max, and min differential
+    avg_differential = float(df["score_differential"].mean())
+    median_differential = float(df["score_differential"].median())
+    max_differential = float(df["score_differential"].max())
+    min_differential = float(df["score_differential"].min())
+
     # Calculate average, median, max, and min game time
-    avg_game_time = float(df['game_time_in_minutes'].mean())
-    median_game_time = float(df['game_time_in_minutes'].median())
-    max_game_time = float(df['game_time_in_minutes'].max())
-    min_game_time = float(df['game_time_in_minutes'].min())
-    
+    avg_game_time = float(df["game_time_in_minutes"].mean())
+    median_game_time = float(df["game_time_in_minutes"].median())
+    max_game_time = float(df["game_time_in_minutes"].max())
+    min_game_time = float(df["game_time_in_minutes"].min())
+
     # Calculate correlation between game time and score differential
-    correlation = float(df['game_time_in_minutes'].corr(df['score_differential']))
-    
+    correlation = float(df["game_time_in_minutes"].corr(df["score_differential"]))
+
     game_analysis = {
         'search_start_date': start_date,
         'search_end_date': end_date,
@@ -138,6 +155,7 @@ def analyze_games(data_file_path):
     print(game_analysis)
     return game_analysis
 
+
 @task
 def save_analysis_to_file(game_analysis, file_name):
     '''This task will save the analysis to a file.'''
@@ -145,23 +163,24 @@ def save_analysis_to_file(game_analysis, file_name):
     # Method 1: Single row format
     df = pd.DataFrame([game_analysis])
     df.to_parquet(file_name)
-    
+
     print(file_name)
     return file_name
+
 
 @task
 def game_analysis_artifact(game_analysis, game_data_path):
     '''This task will create an artifact with the game analysis.'''
     
     # First read the JSON data from the file
-    with open(game_data_path, 'r') as f:
+    with open(game_data_path, "r") as f:
         game_data = json.load(f)
-    
+
     # Now create the DataFrame from the loaded data
     df = pd.DataFrame(game_data)
-    
+
     # Create the markdown report
-    markdown_report=f""" # Game Analysis Report
+    markdown_report = f""" # Game Analysis Report
 ## Search Parameters
 Search Start Date: {game_analysis['search_start_date']}
 Search End Date: {game_analysis['search_end_date']}
@@ -185,7 +204,7 @@ Correlation between game time and score differential: {game_analysis['time_diffe
     create_markdown_artifact(
         key="game-analysis",
         markdown=markdown_report,
-        description="Game analysis report"
+        description="Game analysis report",
     )
 
 
@@ -231,5 +250,3 @@ if __name__ == "__main__":
     #     },
     #     cron="30 * * * *"
     # )
-    
-

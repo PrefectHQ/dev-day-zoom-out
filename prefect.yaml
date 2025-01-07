@@ -1,0 +1,44 @@
+# Welcome to your prefect.yaml file! You can use this file for storing and managing
+# configuration for deploying your flows. We recommend committing this file to source
+# control along with your flow code.
+
+# Generic metadata about this project
+name: dev-day-zoom-out
+prefect-version: 2.14.3+3015.gb8a7988b16
+
+# build section allows you to manage and build docker images
+build:
+
+# push section allows you to manage if and how this project is uploaded to remote locations
+push:
+
+# pull section allows you to provide instructions for cloning this project in remote locations
+pull:
+- prefect.deployments.steps.set_working_directory:
+    directory: /Users/jennifer/Desktop/Prefect/dev-day-zoom-out
+
+# the deployments section allows you to provide configuration for deploying flows
+deployments:
+- name: mlb-simple-deploy
+  version:
+  tags: []
+  concurrency_limit:
+  description: Prefect flow to fetch game scores and locations for multiple teams,
+    then insert them into Snowflake.
+  entrypoint: 
+    track_2_operationalize_workflows/session_3_zoom_out/get_mlb_data_results.py:mlb_simple_flow
+  parameters: {}
+  work_pool:
+    name: process
+    work_queue_name:
+    job_variables: {}
+  enforce_parameter_schema: true
+  schedules: []
+  sla:
+  - name: mlb-simple-high
+    severity: high
+    duration: 18
+  - name: mlb-simple-critical
+    severity: critical
+    duration: 1800
+  tags: ["jenny"]
