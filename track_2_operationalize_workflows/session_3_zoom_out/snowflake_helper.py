@@ -12,7 +12,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-@task
+@task(result_storage_key="game_scores")
 async def setup_tables(block_name: str):
     """Create Snowflake tables for game scores and locations."""
     try:
@@ -64,7 +64,7 @@ async def setup_tables(block_name: str):
         raise e
 
 
-@task
+@task(result_storage_key="game_scores")
 async def insert_game_scores(game_scores: List[Dict], block_name: str):
     """Insert game scores data into Snowflake."""
     if not game_scores:
@@ -124,7 +124,7 @@ async def insert_game_scores(game_scores: List[Dict], block_name: str):
         raise e
 
 
-@task
+@task(result_storage_key="game_locations")
 async def insert_game_locations(game_locations: List[Dict], block_name: str):
     """Insert game locations data into Snowflake."""
     if not game_locations:
