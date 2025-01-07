@@ -10,14 +10,20 @@ from prefect.tasks import exponential_backoff
 from typing import List, Dict
 import asyncio
 from prefect.futures import wait
+from datetime import timedelta
+from time import sleep
+from prefect_aws.s3 import S3Bucket
+
 
 # Importing Snowflake helper tasks
 from snowflake_helper import setup_tables, insert_game_scores, insert_game_locations
 from prefect._experimental.lineage import emit_lineage_event
 from resources import MLB_API_SCHEDULE
 
+s3_results = S3Bucket.load("s3-results")
 
-@task
+
+@task(result_storage_key="recent_games", cache_expiration=timedelta(seconds=50))
 async def get_recent_games(
     team_ids: List[int], start_date: str, end_date: str
 ) -> List[str]:
@@ -43,7 +49,7 @@ async def get_recent_games(
 
     # Remove duplicates and ensure all are digits
     unique_game_ids = list({gid for gid in all_game_ids if gid.isdigit()})
-
+    sleep(timedelta(minutes=6).total_seconds())
     return unique_game_ids
 
 
@@ -109,7 +115,7 @@ async def fetch_game_score(game_id: str) -> Dict:
     return score_data
 
 
-@task(retries=5, retry_delay_seconds=exponential_backoff(backoff_factor=10))
+@task(retries=5, retry_delay_seconds=exponential_backoff(backoff_factor=10), result_storage_key="game_location", cache_expiration=timedelta(seconds=50))
 async def fetch_game_location(game_id: str) -> Dict:
     """
     Fetch game location details for each game.
@@ -158,7 +164,7 @@ async def fetch_game_location(game_id: str) -> Dict:
     return location_data
 
 
-@flow
+@flow(log_prints=True, result_storage=s3_results)
 async def get_game_scores(game_ids: List[str]) -> List[Dict]:
     """
     Fetch scores for each game.
@@ -174,7 +180,7 @@ async def get_game_scores(game_ids: List[str]) -> List[Dict]:
         scores.append(task.result())
     # Filter out any empty dictionaries in case of missing data
     scores = [score for score in scores if score]
-
+    sleep(timedelta(minutes=6).total_seconds())
     return scores
 
 

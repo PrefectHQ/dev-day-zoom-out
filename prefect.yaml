@@ -19,47 +19,6 @@ pull:
 
 # the deployments section allows you to provide configuration for deploying flows
 deployments:
-- name: mlb-deploy-sla
-  version:
-  tags: []
-  concurrency_limit:
-  description:
-  entrypoint: track_1_build_workflows/session_2_resilent_workflows/mlb_flow.py:mlb_flow
-  parameters: {}
-  work_pool:
-    name: process
-    work_queue_name:
-    job_variables: {}
-  enforce_parameter_schema: true
-  schedules: []
-  sla:
-  - name: high
-    severity: high
-    duration: 18
-  - name: critical
-    severity: critical
-    duration: 1800
-- name: get-game-scores-deploy
-  version:
-  tags: []
-  concurrency_limit:
-  description: Fetch scores for each game.
-  entrypoint: 
-    track_2_operationalize_workflows/session_1_zoom_in/get_mlb_data.py:get_game_scores
-  parameters: {}
-  work_pool:
-    name: process
-    work_queue_name:
-    job_variables: {}
-  enforce_parameter_schema: true
-  schedules: []
-  sla:
-  - name: high
-    severity: high
-    duration: 18
-  - name: critical
-    severity: critical
-    duration: 1800
 - name: mlb-simple-deploy
   version:
   tags: []
@@ -67,7 +26,7 @@ deployments:
   description: Prefect flow to fetch game scores and locations for multiple teams,
     then insert them into Snowflake.
   entrypoint: 
-    track_2_operationalize_workflows/session_1_zoom_in/get_mlb_data.py:mlb_simple_flow
+    track_2_operationalize_workflows/session_3_zoom_out/get_mlb_data_results.py:mlb_simple_flow
   parameters: {}
   work_pool:
     name: process
