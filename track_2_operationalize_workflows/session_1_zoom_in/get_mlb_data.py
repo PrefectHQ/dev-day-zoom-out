@@ -18,7 +18,38 @@ from snowflake_helper import (
     insert_game_locations_into_snowflake,
 )
 from prefect._experimental.lineage import emit_lineage_event
-from resources import MLB_API_SCHEDULE, MLB_API_SCORE, MLB_API_LOCATION
+from resources import MLB_API_SCHEDULE, MLB_API_SCORE, MLB_API_LOCATION, HIGHLIGHTED_TEAMS_S3_FILE
+from prefect_aws.s3 import S3Bucket
+import pandas as pd
+import time
+
+@task
+async def get_highlighted_teams_data_from_s3() -> pd.DataFrame:
+    s3_bucket_block = await S3Bucket.load("mlb-raw-data")
+    s3_bucket_path = await s3_bucket_block.upload_from_path("2025-01-02-143-alluring-dragonfly-boxscore.json")
+    downloaded_file_path = await s3_bucket_block.download_object_to_path(
+        s3_bucket_path, "highlighted_team_data.json"
+    )
+
+    await emit_lineage_event(
+        event_name="Get Highlighted Teams Data from S3",
+        upstream_resources=[HIGHLIGHTED_TEAMS_S3_FILE],
+        downstream_resources=None,
+        direction_of_run_from_event="downstream",
+    )
+
+    df = pd.read_json("highlighted_teams_data.json")
+
+    team_ids = df[0].to_list()
+
+    await emit_lineage_event(
+        event_name=f"Get Highlighted Teams Data from S3; {team_ids}",
+        upstream_resources=[HIGHLIGHTED_TEAMS_S3_FILE],
+        downstream_resources=None,
+        direction_of_run_from_event="downstream",
+    )
+
+    return team_ids
 
 
 @task
@@ -149,12 +180,15 @@ async def fetch_game_location_data(game_id: str) -> Dict:
 
 
 @flow
-async def fetch_and_store_mlb_raw_data(
-    team_ids: List[int], start_date: str, end_date: str, snowflake_block: str
+async def fetch_and_store_mlb_raw_data(start_date: str, end_date: str, snowflake_block: str
 ):
     """
     Prefect flow to fetch game scores and locations for multiple teams, then insert them into Snowflake.
     """
+
+    # Step 0: Get highlighted teams data to analyze
+    team_ids = await get_highlighted_teams_data_from_s3()
+
     # Step 1: Set up Snowflake tables
     await create_mlb_snowflake_tables(block_name=snowflake_block)
 
@@ -200,25 +234,12 @@ async def fetch_and_store_mlb_raw_data(
 
 if __name__ == "__main__":
     # Example usage
-    TEAM_IDS = [
-        133,
-        134,
-        # 135,
-        # 136,
-        # 137,
-        # 138,
-        # 139,
-        # 140,
-        # 141,
-        # 121,
-    ]
     START_DATE = "2022-02-01"
     END_DATE = "2024-11-30"
     SNOWFLAKE_BLOCK_NAME = "dev-day-staging"  # Replace with your actual block name
 
     asyncio.run(
         fetch_and_store_mlb_raw_data(
-            team_ids=TEAM_IDS,
             start_date=START_DATE,
             end_date=END_DATE,
             snowflake_block=SNOWFLAKE_BLOCK_NAME,
