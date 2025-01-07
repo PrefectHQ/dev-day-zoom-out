@@ -41,3 +41,4 @@ deployments:
   - name: mlb-simple-critical
     severity: critical
     duration: 1800
+  tags: ["jenny"]
